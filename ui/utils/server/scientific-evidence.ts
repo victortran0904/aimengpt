@@ -46,11 +46,15 @@ const DEFAULT_MAX_CHUNK_CHARS = 1200;
 
 const TITLE_KEYS = ['title', 'documentTitle', 'document_title', 'pdfTitle'];
 const SOURCE_KEYS = [
+  'sourceLabel',
+  'publicSource',
+  'publicIdentifier',
+  'originalFilename',
+  'filename',
+  'fileName',
   'source',
   'sourcePath',
   'source_path',
-  'filename',
-  'fileName',
 ];
 const PAGE_KEYS = ['page', 'pageNumber', 'page_number'];
 const CHUNK_INDEX_KEYS = ['chunkIndex', 'chunk_index'];
@@ -104,6 +108,19 @@ function toCleanString(value: unknown): string | null {
   return null;
 }
 
+function toCitationSource(value: unknown): string | null {
+  const source = toCleanString(value);
+  if (!source) {
+    return null;
+  }
+
+  const [withoutQuery] = source.split(/[?#]/);
+  const normalizedPath = withoutQuery.replace(/\\/g, '/');
+  const pathParts = normalizedPath.split('/').filter(Boolean);
+
+  return pathParts[pathParts.length - 1] ?? source;
+}
+
 function toNumberOrNull(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -132,7 +149,7 @@ function normalizeMetadata(rawMetadata: unknown): {
   const title =
     toCleanString(firstPrimitive(metadata, TITLE_KEYS)) ?? 'Untitled Source';
   const source =
-    toCleanString(firstPrimitive(metadata, SOURCE_KEYS)) ?? 'unknown-source';
+    toCitationSource(firstPrimitive(metadata, SOURCE_KEYS)) ?? 'unknown-source';
   const page = toNumberOrNull(firstPrimitive(metadata, PAGE_KEYS));
   const chunkIndex = toNumberOrNull(firstPrimitive(metadata, CHUNK_INDEX_KEYS));
   const chunkId = toCleanString(firstPrimitive(metadata, CHUNK_ID_KEYS));
@@ -153,12 +170,22 @@ function collapseWhitespace(content: string): string {
 }
 
 function safeTruncate(text: string, maxChars: number): string {
-  if (maxChars <= 0 || text.length <= maxChars) {
+  const maxLength = Math.max(0, Math.floor(maxChars));
+
+  if (maxLength <= 0) {
+    return '';
+  }
+
+  if (text.length <= maxLength) {
     return text;
   }
 
   const ellipsis = '...';
-  const limit = Math.max(0, maxChars - ellipsis.length);
+  if (maxLength <= ellipsis.length) {
+    return ellipsis.slice(0, maxLength);
+  }
+
+  const limit = maxLength - ellipsis.length;
   const truncated = text.slice(0, limit).trimEnd();
   return `${truncated}${ellipsis}`;
 }
@@ -171,7 +198,7 @@ function hashString(value: string): string {
       (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
   }
 
-  return (hash >>> 0).toString(36).toUpperCase();
+  return (hash >>> 0).toString(16).toUpperCase().padStart(8, '0');
 }
 
 function buildCitationKey(
@@ -189,13 +216,11 @@ function buildCitationKey(
     normalizedContent,
   ].join('|');
 
-  return `SRC-${hashString(keySeed).slice(0, 8)}`;
+  return `SRC-${hashString(keySeed)}`;
 }
 
 function buildSourceId(source: string, title: string): string {
-  return `DOC-${hashString(
-    `${source.toLowerCase()}|${title.toLowerCase()}`,
-  ).slice(0, 8)}`;
+  return `DOC-${hashString(`${source.toLowerCase()}|${title.toLowerCase()}`)}`;
 }
 
 export function buildScientificEvidencePayload(

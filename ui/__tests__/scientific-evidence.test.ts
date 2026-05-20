@@ -42,11 +42,18 @@ describe('buildScientificEvidencePayload', () => {
     expect(first.citations.map((citation) => citation.key)).toEqual(
       second.citations.map((citation) => citation.key),
     );
+    expect(first.citations.map((citation) => citation.key)).toEqual([
+      expect.stringMatching(/^SRC-[0-9A-F]{8}$/),
+      expect.stringMatching(/^SRC-[0-9A-F]{8}$/),
+    ]);
     expect(first.sourceManifest).toHaveLength(1);
+    expect(first.sourceManifest[0].sourceId).toEqual(
+      expect.stringMatching(/^DOC-[0-9A-F]{8}$/),
+    );
     expect(first.sourceManifest[0].citationKeys).toHaveLength(2);
   });
 
-  it('normalizes ragged metadata and falls back safely', () => {
+  it('normalizes ragged metadata and prefers citation-friendly sources', () => {
     const queryResult: ChromaQueryLike = {
       ids: [['id-1']],
       documents: [['  Content   with   spaces  ']],
@@ -54,6 +61,7 @@ describe('buildScientificEvidencePayload', () => {
         [
           {
             title: 123,
+            filename: 'research.pdf',
             sourcePath: '/var/tmp/research.pdf',
             pageNumber: '5',
             chunk_index: '2',
@@ -67,7 +75,9 @@ describe('buildScientificEvidencePayload', () => {
     const payload = buildScientificEvidencePayload(queryResult);
     expect(payload.citations).toHaveLength(1);
     expect(payload.citations[0].title).toBe('123');
-    expect(payload.citations[0].source).toBe('/var/tmp/research.pdf');
+    expect(payload.citations[0].source).toBe('research.pdf');
+    expect(payload.sourceManifest[0].source).toBe('research.pdf');
+    expect(payload.evidenceContext).not.toContain('/var/tmp/research.pdf');
     expect(payload.citations[0].page).toBe(5);
     expect(payload.citations[0].chunkIndex).toBe(2);
     expect(payload.citations[0].chunkId).toBe('c-2');
@@ -90,6 +100,25 @@ describe('buildScientificEvidencePayload', () => {
     expect(payload.citations[0].content.length).toBeLessThanOrEqual(20);
     expect(payload.evidenceContext.length).toBeLessThanOrEqual(60);
     expect(payload.evidenceContext.endsWith('...')).toBe(true);
+  });
+
+  it('truncates safely when max chars is shorter than the ellipsis', () => {
+    const queryResult: ChromaQueryLike = {
+      ids: [['id-1']],
+      documents: [['A'.repeat(200)]],
+      metadatas: [[{ title: 'Large Chunk', source: 'source.pdf', page: 1 }]],
+      distances: [[0.2]],
+    };
+
+    const payload = buildScientificEvidencePayload(queryResult, {
+      maxChunkChars: 2,
+      maxEvidenceChars: 2,
+    });
+
+    expect(payload.citations[0].content).toBe('..');
+    expect(payload.citations[0].content.length).toBeLessThanOrEqual(2);
+    expect(payload.evidenceContext).toBe('..');
+    expect(payload.evidenceContext.length).toBeLessThanOrEqual(2);
   });
 
   it('handles ragged/null chroma arrays without throwing', () => {

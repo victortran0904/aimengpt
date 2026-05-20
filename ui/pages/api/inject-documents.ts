@@ -32,6 +32,8 @@ export default async function handler(
       if (!pdfFile?.filepath) {
         return res.status(400).json({ error: 'A PDF file is required' });
       }
+      const publicSource =
+        asNonEmptyString(pdfFile.originalFilename) ?? 'uploaded-document.pdf';
 
       const client = new ChromaClient({
         path: process.env.CHROMA_PATH || 'http://chroma-server:8000',
@@ -49,7 +51,10 @@ export default async function handler(
       const docs = await splitter.splitDocuments(originalDocs);
 
       // Process the documents and perform other logic
-      const { ids, metadatas, documentContents } = processDocuments(docs);
+      const { ids, metadatas, documentContents } = processDocuments(
+        docs,
+        publicSource,
+      );
 
       const embedder = new TransformersEmbeddingFunction();
       const collection = await client.getOrCreateCollection({
@@ -164,7 +169,7 @@ function getPdfInfoPrimitive(
   return getPrimitive(info, key);
 }
 
-function processDocuments(docs: LoadedDocument[]) {
+function processDocuments(docs: LoadedDocument[], publicSource?: string) {
   const ids: string[] = [];
   const metadatas: PrimitiveMetadata[] = [];
   const documentContents: string[] = [];
@@ -173,11 +178,15 @@ function processDocuments(docs: LoadedDocument[]) {
     const document = docs[index];
     const metadata = isRecord(document.metadata) ? document.metadata : {};
 
-    const sourcePath =
+    const sourceForCitation =
+      asNonEmptyString(getPrimitive(metadata, 'filename')) ??
+      asNonEmptyString(getPrimitive(metadata, 'fileName')) ??
+      asNonEmptyString(getPrimitive(metadata, 'originalFilename')) ??
+      publicSource ??
       asNonEmptyString(getPrimitive(metadata, 'source')) ??
       asNonEmptyString(getPrimitive(metadata, 'sourcePath')) ??
       `document-${index + 1}.pdf`;
-    const filename = path.basename(sourcePath);
+    const filename = path.basename(sourceForCitation.replace(/\\/g, '/'));
     const fallbackTitle =
       filename.length > 0 ? filename : `Document ${index + 1}`;
     const titleFromMetadata =
@@ -205,8 +214,7 @@ function processDocuments(docs: LoadedDocument[]) {
 
     const metadataToStore: PrimitiveMetadata = {
       title,
-      source: sourcePath,
-      sourcePath,
+      source: fallbackTitle,
       filename,
       chunkIndex,
       chunkId,
