@@ -1,6 +1,6 @@
 import { DEFAULT_SYSTEM_PROMPT, DEFAULT_TEMPERATURE } from '@/utils/app/const';
 import { OpenAIError, OpenAIStream } from '@/utils/server';
-import { codeBlock, oneLine } from 'common-tags'
+import type { ScientificSourceManifestEntry } from '@/utils/server/scientific-evidence';
 
 import { ChatBody, Message } from '@/types/chat';
 
@@ -9,46 +9,67 @@ import wasm from '../../node_modules/@dqbd/tiktoken/lite/tiktoken_bg.wasm?module
 
 import tiktokenModel from '@dqbd/tiktoken/encoders/cl100k_base.json';
 import { Tiktoken, init } from '@dqbd/tiktoken/lite/init';
+import { codeBlock, oneLine } from 'common-tags';
 
 export const config = {
   runtime: 'edge',
 };
 
-// Function to fetch and format documents
-async function fetchAndFormatDocuments(lastMessageContent: string) {
+type FetchDocumentsResponse = {
+  evidenceContext?: string;
+  sourceManifest?: ScientificSourceManifestEntry[];
+};
+
+function formatSourceManifest(
+  sourceManifest: ScientificSourceManifestEntry[],
+): string {
+  return sourceManifest
+    .map((source, index) => {
+      return `${index + 1}. ${source.title} (${
+        source.source
+      }) -> keys: ${source.citationKeys.join(', ')}`;
+    })
+    .join('\n');
+}
+
+async function fetchScientificEvidence(
+  req: Request,
+  lastMessageContent: string,
+) {
   try {
-    console.log("fetching documents")
-    const response = await fetch('http://localhost:3000/api/fetch-documents', {
+    const fetchDocumentsUrl = new URL(
+      '/api/fetch-documents',
+      req.url,
+    ).toString();
+    const response = await fetch(fetchDocumentsUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: lastMessageContent }),
+      body: JSON.stringify({
+        input: lastMessageContent,
+        nResults: 8,
+        maxEvidenceChars: 12000,
+      }),
     });
-    
+
     if (!response.ok) {
       throw new Error(`Error fetching documents: ${response.statusText}`);
     }
 
-    const data = await response.json();
-    const result = data.metadatas[0].map((metadata: any, index: number) => {
-      return `Source ${index + 1}) Title: ${metadata.title}, Page: ${metadata.page}, Content: ${data.documents[0][index]}\n`;
-    }).join('');
-
-    console.log(result);
-
-    return result;
-
+    const data = (await response.json()) as FetchDocumentsResponse;
+    return {
+      evidenceContext:
+        typeof data.evidenceContext === 'string' ? data.evidenceContext : '',
+      sourceManifest: Array.isArray(data.sourceManifest)
+        ? data.sourceManifest
+        : [],
+    };
   } catch (error) {
-    console.error('Error fetching and formatting documents:', error);
-    throw error; // You may want to throw a more specific error object here
+    console.error('Error fetching scientific evidence:', error);
+    throw error;
   }
 }
 
-
-
-
-
 const handler = async (req: Request): Promise<Response> => {
-
   try {
     const { model, messages, key, prompt, temperature } =
       (await req.json()) as ChatBody;
@@ -85,8 +106,11 @@ const handler = async (req: Request): Promise<Response> => {
 
     const lastMessage = messages[messages.length - 1];
 
-    const relevantDocuments = await fetchAndFormatDocuments(lastMessage.content);
-    
+    const { evidenceContext, sourceManifest } = await fetchScientificEvidence(
+      req,
+      lastMessage.content,
+    );
+
     let temperatureToUse = temperature;
     if (temperatureToUse == null) {
       temperatureToUse = DEFAULT_TEMPERATURE;
@@ -97,22 +121,27 @@ const handler = async (req: Request): Promise<Response> => {
     let tokenCount = prompt_tokens.length;
     let messagesToSend: Message[] = [];
 
-
     encoding.free();
 
     console.log(model, promptToSend, temperatureToUse, key, messagesToSend);
 
-  
-  messagesToSend = [
+    messagesToSend = [
       {
-        role: "user",
+        role: 'user',
         content: codeBlock`
-          Here is the relevant documentation:
-          ${relevantDocuments}
+          Here is the evidence context:
+          ${evidenceContext}
         `,
       },
       {
-        role: "user",
+        role: 'user',
+        content: codeBlock`
+          Here is the source manifest:
+          ${formatSourceManifest(sourceManifest)}
+        `,
+      },
+      {
+        role: 'user',
         content: codeBlock`
           ${oneLine`
             Answer my next question using only the above documentation.
@@ -130,19 +159,21 @@ const handler = async (req: Request): Promise<Response> => {
             - Prefer splitting your response into multiple paragraphs.
           `}
           ${oneLine`
-            - Output as markdown with citations based on the documentation.
+            - Cite claims inline with the provided citation keys (format: [SRC-XXXXXXXX]).
+          `}
+          ${oneLine`
+            - Only cite keys that appear in the source manifest/evidence context.
           `}
         `,
       },
       {
-        role: "user",
+        role: 'user',
         content: codeBlock`
           Here is my question:
           ${oneLine`${lastMessage.content}`}
       `,
       },
-    ]
-
+    ];
 
     const stream = await OpenAIStream(
       model,
