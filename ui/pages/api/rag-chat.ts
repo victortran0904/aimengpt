@@ -178,7 +178,7 @@ const handler = async (req: Request): Promise<Response> => {
     const stream = await OpenAIStream(
       model,
       promptToSend,
-      0,
+      temperatureToUse,
       key,
       messagesToSend,
     );
